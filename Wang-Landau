@@ -1,1 +1,141 @@
-Code Test
+import numpy as np
+from matplotlib import pyplot as plt
+
+rng = np.random.default_rng(12345)
+def delta(s_i: float, s_j: float):
+    return int(bool(s_i == s_j))
+
+def delta_arr(s: np.ndarray, t: np.ndarray):
+    i, j = np.meshgrid(np.arange(len(s)), np.arange(len(s)), indexing='ij')
+    return np.astype(s[i,j] == t[i,j], int)
+
+def nearest_neighbor(x: int, y: int, Lx: int, Ly: int): #only vertical/horizontal counted as nearest-neighbor
+    return [[(x-1)%Lx, y%Ly], [(x+1)%Lx, y%Ly], [x%Lx, (y-1)%Ly], [x%Lx, (y+1)%Ly]]
+
+def Energy(s: np.ndarray, J=1):
+    S = []
+    Lx = len(s[:,0])
+    Ly = len(s[0])
+    i,j = np.meshgrid(np.arange(Lx), np.arange(Ly), indexing='ij')
+    nn = nearest_neighbor(np.arange(Lx)[i], np.arange(Ly)[j], Lx, Ly)
+    for l in range(4):
+        S.append(delta_arr(s[nn[l][0][:], nn[l][1][:]], s))
+    S_final = np.sum(S, axis=1)
+    return -J/2 * np.sum(S_final) #multiply by 1/2 to take into account that each nearest-neighbor pair is counted twice
+
+def exp_val(x):
+    return 1/len(x) * sum(x)
+
+def Tc(q):
+    return 1/np.log(1+np.sqrt(q))
+
+def lattice(q: int, Lx: int, Ly: int):
+    q_list = np.arange(1,q+1)
+    return rng.choice(q_list,(Lx,Ly))
+
+def probability_log(g1_log, g2_log):
+    return min(g1_log - g2_log, 0)
+
+def Wang_Landau(s, f, gE_log, h_E, n, q, Lx, Ly):
+    s0 = s
+    E0 = Energy(s0)
+    for _ in range(n):
+        i, j = [rng.choice(Lx),rng.choice(Ly)]
+        old_value = int(s0[i,j])
+        s_new = s0.copy()
+        s_new[i,j] = rng.choice(list(set(np.arange(1,q+1)) - {old_value}))
+
+        E_new = Energy(s_new)
+        if E_new not in gE_log:
+            gE_log[E_new] = 0
+        if E_new not in h_E:
+            h_E[E_new] = 0
+        if E0 not in gE_log:
+            gE_log[E0] = 0
+        if E0 not in h_E:
+            h_E[E0] = 0
+
+        R = rng.random()
+        if np.log(R) < probability_log(gE_log[E0], gE_log[E_new]):
+            E0 = E_new
+            s0 = s_new
+
+        gE_log[E0] = gE_log[E0] + np.log(f)
+        h_E[E0] = h_E[E0] + 1
+  return gE_log, h_E, s0
+
+def flatness_condition(h_E, tol=0.8):
+    h_mean = np.mean(list(h_E.values()))
+    E_list = []
+    for E in h_E.keys():
+        if h_E[E] > tol*h_mean:
+            E_list.append(E)
+    return (len(E_list)/len(h_E.keys()) == 1.0)
+
+#Initialize
+q = 10
+L = 10
+
+log_gE0 = {}
+h0_E = {}
+f = np.e
+
+s_start = lattice(q,L,L)
+log_gE0[Energy(s_start)] = 0
+h0_E[Energy(s_start)] = 0
+s = s_start
+
+log_gE = log_gE0
+h_E = h0_E
+
+for i in range(1_000_000):
+    log_gE1, h1_E, s_current = Wang_Landau(s, f, log_gE, h_E, 10_000, q, L, L)
+    endpoints_found = (-2 * L**2 in h1_E) and (0 in h1_E)
+    if endpoints_found and flatness_condition(h1_E):
+        hE0_current = h1_E.copy()
+        print(i)
+        break
+    else:
+        log_gE, h_E, s = log_gE1, h1_E, s_current
+        continue
+
+h2_E = h1_E
+log_gE2 = log_gE1
+f = np.e
+s2 = s_current
+
+log_gE = log_gE2
+h_E = h0_E
+hE_current = []
+gE_current = []
+ep = 0.0038
+
+while f > 1 + ep:
+    log_gE3, h3_E, s3_current = Wang_Landau(s2, f, log_gE2, h2_E, 10_000, q, L, L)
+    endpoints_found = (-2 * L**2 in h3_E) and (0 in h3_E)
+    if endpoints_found and flatness_condition(h3_E):
+        hE_current.append(h3_E.copy())
+        gE_current.append(log_gE3.copy())
+        # print(flatness_condition(hE_current))
+        h3_E.update(dict.fromkeys(h3_E, 0))
+        f = np.sqrt(f)
+        print("f = ", f)
+    log_gE2, h2_E, s2 = log_gE3, h3_E, s3_current
+
+def E_exp(T,L,log_gE):
+    energies = np.array(list(log_gE.keys()))
+    counts = np.array(list(log_gE.values()))
+    log_weight = counts - energies/T
+    weight = log_weight - max(log_weight)
+    exponent = np.exp(weight)
+    S1 = energies*exponent
+    S2 = exponent
+    S = sum(S1)/sum(S2)
+    return S/(L*L)
+
+plt.vlines(Tc(q), -1.8, -0.5, 'red', '--', alpha=0.5, label=f'T_c = {Tc(q).round(3)}')
+plt.plot(np.linspace(0.01,1.5,80),[E_exp(T,L,gE_current[-1]) for T in np.linspace(0.01,1.5,80)], '.')
+plt.ylabel('<E>/N', fontsize=12)
+plt.xlabel('Temperature (T)', fontsize=12)
+plt.legend(fontsize=12)
+plt.show()
